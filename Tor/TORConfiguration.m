@@ -11,78 +11,112 @@ NS_ASSUME_NONNULL_BEGIN
 
 @implementation TORConfiguration
 
-static NSString * const kDataDirectory = @"DataDirectory";
-static NSString * const kControlSocket = @"ControlSocket";
-static NSString * const kSocksPort = @"SocksPort";
-static NSString * const kCookieAuthentication = @"CookieAuthentication";
-
 - (NSDictionary *)options {
-    if (!_options)
-        _options = [NSDictionary new];
+    if (!_options) _options = [NSDictionary new];
     
     return _options;
 }
 
 - (NSArray *)arguments {
-    if (!_arguments)
-        _arguments = [NSArray new];
+    if (!_arguments) _arguments = [NSArray new];
     
     return _arguments;
 }
 
-- (void)setDataDirectory:(nullable NSURL *)dataDirectory {
-    NSMutableDictionary *options = [self.options mutableCopy];
-    if (!dataDirectory) {
-        [options removeObjectForKey:kDataDirectory];
-    } else {
-        options[kDataDirectory] = @((const char * _Nonnull)dataDirectory.fileSystemRepresentation);
+- (nullable NSURL *)controlPortFile {
+    return [self.dataDirectory URLByAppendingPathComponent:@"controlport"];
+}
+
+- (nullable NSURL *)serviceAuthDirectory {
+    return [self.hiddenServiceDirectory URLByAppendingPathComponent:@"authorized_clients"];
+}
+
+- (BOOL)isLocked {
+    NSURL *url = [self.dataDirectory URLByAppendingPathComponent:@"lock"];
+    NSString *path = url.path;
+
+    if (!path || !url.isFileURL) return false;
+
+    return [NSFileManager.defaultManager fileExistsAtPath:path];
+}
+
+- (nullable NSData *)cookie {
+    NSURL *url = [self.dataDirectory URLByAppendingPathComponent:@"control_auth_cookie"];
+
+    if (!url || !url.isFileURL) return nil;
+
+    return [[NSData alloc] initWithContentsOfURL:url];
+}
+
+- (NSArray<NSString *> *)compile {
+    NSMutableArray<NSString *> *arguments = [NSMutableArray new];
+
+    if (self.ignoreMissingTorrc) {
+        [arguments addObjectsFromArray:@[@"--allow-missing-torrc", @"--ignore-missing-torrc"]];
     }
-    self.options = options;
-}
 
-- (nullable NSURL *)dataDirectory {
-    NSString *path = self.options[kDataDirectory];
-    return (path ? [NSURL fileURLWithPath:path] : nil);
-}
-
-- (void)setControlSocket:(nullable NSURL *)controlSocket {
-    NSMutableDictionary *options = [self.options mutableCopy];
-    if (!controlSocket) {
-        [options removeObjectForKey:kControlSocket];
-    } else {
-        options[kControlSocket] = @((const char * _Nonnull)controlSocket.fileSystemRepresentation);
+    if (self.avoidDiskWrites) {
+        [arguments addObjectsFromArray:@[@"--AvoidDiskWrites", @"1"]];
     }
-    self.options = options;
-}
 
-- (nullable NSURL *)controlSocket {
-    NSString *path = self.options[kControlSocket];
-    return (path ? [NSURL fileURLWithPath:path] : nil);
-}
+    if (self.clientOnly) {
+        [arguments addObjectsFromArray:@[@"--ClientOnly", @"1"]];
+    }
 
-- (void)setSocksURL:(nullable NSURL *)socksURL {
-    NSMutableDictionary *options = [_options mutableCopy];
-    [options setObject:[NSString stringWithFormat:@"unix:%s", socksURL.fileSystemRepresentation] forKey:kSocksPort];
-    self.options = options;
-}
+    NSString *dataDir = self.dataDirectory.path;
+    if (self.dataDirectory.isFileURL && dataDir) {
+        [arguments addObjectsFromArray:@[@"--DataDirectory", dataDir]];
+    }
 
-- (nullable NSURL *)socksURL {
-    NSArray<NSString *> *components = [self.options[kSocksPort] componentsSeparatedByString:@":"];
-    if ([components.firstObject isEqualToString:@"unix"])
-        return [NSURL fileURLWithPath:[[components subarrayWithRange:NSMakeRange(1, components.count - 1)] componentsJoinedByString:@":"]];
-    
-    return nil;
-}
+    if (self.cookieAuthentication) {
+        [arguments addObjectsFromArray:@[@"--CookieAuthentication", @"1"]];
+    }
 
-- (void)setCookieAuthentication:(nullable NSNumber *)cookieAuthentication {
-    NSMutableDictionary *options = [self.options mutableCopy];
-    options[kCookieAuthentication] = (cookieAuthentication.boolValue ? @"1" : @"0");
-    self.options = options;
-}
+    NSString *controlPortFile = self.controlPortFile.path;
+    if (self.autoControlPort && self.controlPortFile.isFileURL && controlPortFile) {
+        [arguments addObjectsFromArray:@[@"--ControlPort", @"auto", @"--ControlPortWriteToFile", controlPortFile]];
+    }
 
-- (nullable NSNumber *)cookieAuthentication {
-    NSString *cookieAuthentication = self.options[kCookieAuthentication];
-    return (cookieAuthentication ? @(cookieAuthentication.boolValue) : nil);
+    NSString *controlSocket = self.controlSocket.path;
+    if (self.controlSocket.isFileURL && controlSocket) {
+        [arguments addObjectsFromArray:@[@"--ControlSocket", controlSocket]];
+    }
+
+    NSString *socksPath = self.socksURL.path;
+    if (self.socksURL.isFileURL && socksPath) {
+        [arguments addObjectsFromArray:@[@"--SocksPort", [NSString stringWithFormat:@"unix:%@", socksPath]]];
+    }
+
+    NSString *clientAuthDir = self.clientAuthDirectory.path;
+    if (self.clientAuthDirectory.isFileURL && clientAuthDir) {
+        [arguments addObjectsFromArray:@[@"--ClientOnionAuthDir", clientAuthDir]];
+    }
+
+    NSString *hiddenServiceDir = self.hiddenServiceDirectory.path;
+    if (!self.clientOnly && self.hiddenServiceDirectory.isFileURL && hiddenServiceDir) {
+        [arguments addObjectsFromArray:@[@"--HiddenServiceDir", hiddenServiceDir]];
+    }
+
+    NSString *geoipFile = self.geoipFile.path;
+    if (self.geoipFile.isFileURL && geoipFile) {
+        [arguments addObjectsFromArray:@[@"--GeoIPFile", geoipFile]];
+    }
+
+    NSString *geoip6File = self.geoip6File.path;
+    if (self.geoip6File.isFileURL && geoip6File) {
+        [arguments addObjectsFromArray:@[@"--GeoIPv6File", geoip6File]];
+    }
+
+    [arguments addObjectsFromArray:self.arguments];
+
+    for (NSString *key in self.options.allKeys) {
+        [arguments addObject:[NSString stringWithFormat:@"--%@", key]];
+
+        NSString *value = self.options[key];
+        if (value) [arguments addObject:value];
+    }
+
+    return arguments;
 }
 
 @end
